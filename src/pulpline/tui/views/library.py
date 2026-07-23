@@ -8,10 +8,12 @@ import subprocess
 from collections import defaultdict
 from typing import ClassVar
 
+from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Input, Tree
 from textual.widgets.tree import TreeNode
+from textual.worker import get_current_worker
 
 from pulpline.state import (
     LibraryItem,
@@ -22,6 +24,7 @@ from pulpline.state import (
     list_recently_deleted,
 )
 from pulpline.tui.views.base import View
+from pulpline.util import booklen
 
 
 class LibraryView(View):
@@ -105,9 +108,7 @@ class LibraryView(View):
         # like 'substack-saves' clutter the view otherwise. Manually-
         # expanded buckets stay expanded across refresh/delete actions.
         expanded_buckets = {
-            _bucket_from_label(str(node.label))
-            for node in tree.root.children
-            if node.is_expanded
+            _bucket_from_label(str(node.label)) for node in tree.root.children if node.is_expanded
         }
         tree.clear()
         if not groups:
@@ -119,6 +120,9 @@ class LibraryView(View):
             tree.root.add_leaf(empty_msg)
             return
 
+        # Paths whose word count isn't cached yet - handed to a background
+        # worker below so the tree paints instantly and lengths fill in.
+        pending: list[str] = []
         ordered = sorted(groups.keys(), key=lambda k: (k != "oneshots", k))
         for bucket in ordered:
             bucket_items = groups[bucket]
@@ -137,7 +141,48 @@ class LibraryView(View):
                 else:
                     stamp = item.ingested_at[:10] if item.ingested_at else ""
                 title = item.title or "(untitled)"
-                group_node.add_leaf(f"{stamp}  {title}", data=item)
+                length = self._length_label(item, pending)
+                group_node.add_leaf(f"{stamp}  {title}{length}", data=item)
+
+        if pending:
+            self._compute_lengths(pending)
+
+    def _length_label(self, item: LibraryItem, pending: list[str]) -> str:
+        """Return the '   ·  N words' suffix for a row, or '' when unknown.
+
+        Reads the mtime-keyed cache without touching disk. On a cache miss
+        the path is appended to `pending` (computed later by the worker) and
+        an empty suffix is returned so the row still renders immediately.
+        """
+        if not item.output_path:
+            return ""
+        count = booklen.lookup(item.output_path)
+        if count is booklen.PENDING:
+            pending.append(item.output_path)
+            return ""
+        words = booklen.format_words(count)  # type: ignore[arg-type]
+        return f"   ·  {words}" if words else ""
+
+    @work(thread=True, exclusive=True, group="booklen")
+    def _compute_lengths(self, paths: list[str]) -> None:
+        """Count words for `paths` off the UI thread, then repaint.
+
+        Only mutates the module cache (via booklen.ensure); it never touches
+        Tree nodes, which the UI thread rebuilds on every refresh. When done
+        it asks the UI thread to refresh so the freshly-cached counts show.
+        `exclusive` means a newer refresh cancels this run - the partial work
+        it did is still cached, so nothing is wasted.
+        """
+        worker = get_current_worker()
+        changed = False
+        for path in paths:
+            if worker.is_cancelled:
+                break
+            before = booklen.lookup(path)
+            booklen.ensure(path)
+            changed = changed or before is booklen.PENDING
+        if changed and not worker.is_cancelled:
+            self.app.call_from_thread(self.refresh_data)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "library-filter":
