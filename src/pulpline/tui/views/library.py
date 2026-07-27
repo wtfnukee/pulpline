@@ -191,12 +191,33 @@ class LibraryView(View):
     def action_focus_filter(self) -> None:
         self.query_one("#library-filter", Input).focus()
 
+    def on_tree_node_selected(self, event: Tree.NodeSelected[LibraryItem]) -> None:
+        """Open the clicked (or Enter-activated) item in the OS default app.
+
+        Tree posts NodeSelected on both mouse click and Enter, so this is the
+        real open path - the `enter` binding below is shadowed by Tree's own
+        select action and never reaches `action_open_file`, it just keeps the
+        "Open" hint in the footer. Group nodes carry no LibraryItem (selecting
+        one only toggles its expand state), so those are ignored.
+        """
+        item = event.node.data
+        if isinstance(item, LibraryItem):
+            self._open_item(item)
+
     def action_open_file(self) -> None:
         item = self._selected_item()
-        if item and item.output_path:
+        if item:
+            self._open_item(item)
+
+    def _open_item(self, item: LibraryItem) -> None:
+        """Hand the item's file to the OS default app (EPUB -> reader).
+
+        Deleted items may have no file on disk; there we surface the canonical
+        URL instead so the row is still actionable.
+        """
+        if item.output_path:
             _open_file(item.output_path)
-        elif item and self._show_deleted:
-            # No file on disk, but the user can still want the URL — show it.
+        elif self._show_deleted:
             self.notify(item.canonical_url, title="canonical URL", timeout=10)
 
     def action_delete_file(self) -> None:
