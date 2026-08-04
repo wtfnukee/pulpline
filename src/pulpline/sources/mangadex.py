@@ -45,6 +45,7 @@ _PATH_CHAPTER = re.compile(r"^/chapter/([0-9a-f-]+)")
 class MangaDexSource(Source):
     name: ClassVar[str] = "mangadex"
     extension: ClassVar[str] = "cbz"
+    is_web_article: ClassVar[bool] = False  # CBZ download; open the local file
 
     def __init__(
         self,

@@ -54,6 +54,7 @@ class AnnaQuotaInfo:
 
 class AnnaSource(Source):
     name: ClassVar[str] = "annas"
+    is_web_article: ClassVar[bool] = False  # downloaded book; open the local file
 
     # Class-level shared state: the most recent quota snapshot from any
     # AnnaSource instance. The CLI reads this after pipeline.add_once()

@@ -15,6 +15,7 @@ from textual.widgets import Input, Tree
 from textual.widgets.tree import TreeNode
 from textual.worker import get_current_worker
 
+from pulpline.sources import pick_source_for_url
 from pulpline.state import (
     LibraryItem,
     connect,
@@ -210,13 +211,15 @@ class LibraryView(View):
             self._open_item(item)
 
     def _open_item(self, item: LibraryItem) -> None:
-        """Hand the item's file to the OS default app (EPUB -> reader).
+        """Open the item: web articles in the browser, downloads in the reader.
 
-        Deleted items may have no file on disk; there we surface the canonical
-        URL instead so the row is still actionable.
+        `_open_target` picks the URL or the local path; when there's nothing
+        to open (a downloaded book whose file is gone, e.g. in the tombstone
+        view) we surface the canonical URL as a notification instead.
         """
-        if item.output_path:
-            _open_file(item.output_path)
+        target = _open_target(item)
+        if target:
+            _os_open(target)
         elif self._show_deleted:
             self.notify(item.canonical_url, title="canonical URL", timeout=10)
 
@@ -260,15 +263,36 @@ def _bucket_from_label(label: str) -> str:
     return label.rsplit("  (", 1)[0]
 
 
-def _open_file(path: str) -> None:
-    """Best-effort open with the OS default app. Silent on failure."""
+def _open_target(item: LibraryItem) -> str | None:
+    """Return what to hand the OS opener for `item`: its web URL or local file.
+
+    Web articles (rss, url, substack) open their original `canonical_url` in
+    the browser; downloaded artifacts (Anna's Archive books, arXiv PDFs,
+    MangaDex chapters) open the local file in the OS default reader. The
+    source that produced the item is re-derived from its URL rather than
+    stored, so this classifies existing rows too. Returns None when there's
+    nothing to open (a download whose file is gone).
+    """
+    source = pick_source_for_url(item.canonical_url)
+    if source.is_web_article:
+        return item.canonical_url
+    return item.output_path
+
+
+def _os_open(target: str) -> None:
+    """Best-effort open of a file path OR URL with the OS default handler.
+
+    `open`/`xdg-open`/`os.startfile` all accept URLs as well as paths, so this
+    routes an EPUB to the reader and an `https://` URL to the browser. Silent
+    on failure.
+    """
     system = platform.system()
     try:
         if system == "Darwin":
-            subprocess.Popen(["/usr/bin/open", path])
+            subprocess.Popen(["/usr/bin/open", target])
         elif system == "Linux":
-            subprocess.Popen(["xdg-open", path])
+            subprocess.Popen(["xdg-open", target])
         elif system == "Windows":
-            os.startfile(path)  # type: ignore[attr-defined]
+            os.startfile(target)  # type: ignore[attr-defined]
     except OSError:
         pass

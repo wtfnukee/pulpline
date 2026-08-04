@@ -30,6 +30,7 @@ _ABS_PATH = re.compile(r"/abs/(?P<id>[^/]+)")
 class ArXivSource(Source):
     name: ClassVar[str] = "arxiv"
     extension: ClassVar[str] = "pdf"
+    is_web_article: ClassVar[bool] = False  # PDF download; open the local file
 
     def __init__(self, client: httpx.Client | None = None) -> None:
         super().__init__(client=client)

@@ -34,6 +34,16 @@ class Source(ABC):
     """File extension for items this source produces. Most sources emit EPUBs;
     binary-format sources (arXiv -> PDF, MangaDex -> CBZ) override this."""
 
+    is_web_article: ClassVar[bool] = True
+    """Whether items are web articles rendered offline (vs standalone downloads).
+
+    Drives how the TUI opens a Library item on click: web articles (rss, url,
+    substack) open their original `canonical_url` in the browser, while
+    download sources (Anna's Archive books, arXiv PDFs, MangaDex chapters)
+    override this to False so the local file opens in the OS default reader.
+    Default True so a new source that forgets the flag fails benignly - opens
+    its source URL rather than silently doing nothing."""
+
     def __init__(self, client: httpx.Client | None = None) -> None:
         self._client = client
         self._owns_client = client is None
