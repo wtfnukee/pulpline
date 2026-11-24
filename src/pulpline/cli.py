@@ -571,9 +571,7 @@ def backfill(
 
     base_count = report.skipped_already_ingested + report.new_items
     if report.new_items == 0 and report.stopped_reason == "exhausted":
-        typer.echo(
-            f"nothing more to fetch - full archive ({base_count} posts) already ingested"
-        )
+        typer.echo(f"nothing more to fetch - full archive ({base_count} posts) already ingested")
         return
     bits = [f"backfilled {report.new_items} post(s)"]
     if report.skipped_already_ingested:
