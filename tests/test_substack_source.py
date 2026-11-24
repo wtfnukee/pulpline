@@ -173,11 +173,10 @@ def test_fetch_resolves_cross_post_url_via_by_id_endpoint() -> None:
     assert article.author == "Sam Kriss"
 
 
-def test_discover_backwards_paginates_via_offset_until_empty_page() -> None:
-    """discover_backwards walks offset=0, 25, 50, ... until the archive returns []."""
+def test_discover_backwards_paginates_via_cursor_until_no_next_cursor() -> None:
+    """discover_backwards follows nextCursor until it is absent; offset is never sent."""
     base = "https://samkriss.substack.com"
 
-    # Three full pages of distinct posts, then an empty page that should stop iteration.
     def page(start: int, count: int) -> list[dict[str, Any]]:
         return [
             {
@@ -189,33 +188,38 @@ def test_discover_backwards_paginates_via_offset_until_empty_page() -> None:
             for i in range(count)
         ]
 
-    pages_by_offset: dict[str, list[dict[str, Any]]] = {
-        "": page(1, 25),  # offset omitted -> first page
-        "0": page(1, 25),
-        "25": page(26, 25),
-        "50": page(51, 5),  # partial page
-        "55": [],  # exhausted
+    # cursor -> (posts, nextCursor). "" is the first page (no cursor param).
+    pages: dict[str, dict[str, Any]] = {
+        "": {"posts": page(1, 25), "nextCursor": "c1"},
+        "c1": {"posts": page(26, 25), "nextCursor": "c2"},
+        "c2": {"posts": page(51, 5), "nextCursor": None},  # last page
     }
-    seen_offsets: list[str] = []
+    seen: list[tuple[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path != "/api/v1/archive":
             return httpx.Response(404)
-        offset = request.url.params.get("offset", "")
-        seen_offsets.append(offset)
-        return httpx.Response(200, json=pages_by_offset.get(offset, []))
+        seen.append((request.url.params.get("cursor", ""), request.url.params.get("offset")))
+        return httpx.Response(200, json=pages[request.url.params.get("cursor", "")])
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with SubstackSource(client=client) as source:
         refs = list(source.discover_backwards(base))
 
-    # 25 + 25 + 5 = 55 refs across 4 requests (including the terminating empty page).
     assert len(refs) == 55
-    # First page may use empty offset or "0"; subsequent must use offset.
-    assert any(o in {"", "0"} for o in seen_offsets[:1])
-    assert "25" in seen_offsets
-    assert "50" in seen_offsets
-    assert "55" in seen_offsets  # the empty page that stops the loop
+    assert [c for c, _ in seen] == ["", "c1", "c2"]
+    assert all(offset is None for _, offset in seen)
+
+
+def test_discover_accepts_wrapped_archive_shape() -> None:
+    """Substack now returns {"posts": [...], "nextCursor": ...} rather than a bare list."""
+    base = "https://samkriss.substack.com"
+    client = _routed_client(
+        {f"{base}/api/v1/archive": {"posts": _archive_payload(), "nextCursor": "abc"}}
+    )
+    with SubstackSource(client=client) as source:
+        refs = list(source.discover(base))
+    assert len(refs) == len(_archive_payload())
 
 
 def test_discover_backwards_stops_immediately_on_empty_first_page() -> None:

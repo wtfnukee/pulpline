@@ -87,16 +87,17 @@ class SubstackSource(Source):
 
     def discover(self, target_url: str) -> Iterable[ItemRef]:
         self._publication_url = target_url.rstrip("/")
-        posts = self._archive_page(offset=0, limit=_DISCOVER_LIMIT)
+        posts, _ = self._archive_page(cursor=None, limit=_DISCOVER_LIMIT)
         yield from _yield_post_refs(posts)
 
     def discover_backwards(self, target_url: str) -> Iterable[ItemRef]:
-        """Walk the publication's archive backwards via the `offset` param.
+        """Walk the publication's archive backwards via the `cursor` param.
 
         Yields refs newest-first across the whole archive. Stops when the
-        API returns an empty page (we've reached the oldest post). The
-        caller is responsible for applying stop conditions (post count,
-        date floor, dedup hit) - this method just keeps paginating.
+        API returns an empty page or no `nextCursor` (we've reached the
+        oldest post). The caller is responsible for applying stop
+        conditions (post count, date floor, dedup hit) - this method just
+        keeps paginating.
 
         Each page is _DISCOVER_LIMIT items; we cap there because Substack
         rejects limit>50 with a 400. Going page-by-page keeps memory flat
@@ -104,35 +105,41 @@ class SubstackSource(Source):
         as soon as it's seen enough.
         """
         self._publication_url = target_url.rstrip("/")
-        offset = 0
+        cursor: str | None = None
         while True:
-            posts = self._archive_page(offset=offset, limit=_DISCOVER_LIMIT)
+            posts, cursor = self._archive_page(cursor=cursor, limit=_DISCOVER_LIMIT)
             if not posts:
                 return
-            yielded_this_page = 0
-            for ref in _yield_post_refs(posts):
-                yielded_this_page += 1
-                yield ref
-            offset += yielded_this_page or len(posts)
+            yield from _yield_post_refs(posts)
+            if cursor is None:
+                return
 
-    def _archive_page(self, *, offset: int, limit: int) -> list[Any]:
-        """Fetch one page of the publication archive. Returns post dicts."""
+    def _archive_page(self, *, cursor: str | None, limit: int) -> tuple[list[Any], str | None]:
+        """Fetch one page of the publication archive.
+
+        Returns (post dicts, cursor for the next page or None at the end).
+        Substack moved this endpoint from a bare list + `offset` paging to
+        `{"posts": [...], "nextCursor": ...}` + `cursor` paging (`offset`
+        now 400s). The bare-list shape is still accepted, with no cursor.
+        """
         endpoint = f"{self._publication_url}/api/v1/archive"
         params: dict[str, str] = {"sort": "new", "limit": str(limit)}
-        if offset:
-            params["offset"] = str(offset)
+        if cursor:
+            params["cursor"] = cursor
         try:
             response = self.client.get(endpoint, params=params)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise FetchError(f"failed to list archive {endpoint}: {exc}") from exc
         try:
-            posts = response.json()
+            payload = response.json()
         except ValueError as exc:
             raise ExtractionError(f"archive {endpoint} did not return JSON") from exc
-        if not isinstance(posts, list):
-            raise ExtractionError(f"archive {endpoint} returned non-list")
-        return posts
+        posts = _unwrap_post_list(payload)
+        if posts is None:
+            raise ExtractionError(f"archive {endpoint} returned unexpected shape")
+        next_cursor = payload.get("nextCursor") if isinstance(payload, dict) else None
+        return posts, next_cursor if isinstance(next_cursor, str) and next_cursor else None
 
     def fetch(self, ref: ItemRef) -> RawArticle:
         # Two URL shapes carry a post *id* instead of a slug, so they can't
